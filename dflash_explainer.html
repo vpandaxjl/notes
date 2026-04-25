@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DFlash — 推理加速原理详解</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&family=Noto+Sans+SC:wght@300;400;500&display=swap');
+
+:root {
+  --bg: #050810;
+  --bg2: #080d1a;
+  --bg3: #0d1525;
+  --surface: #111827;
+  --border: #1e2d45;
+  --accent: #00e5ff;
+  --accent2: #ff6b35;
+  --accent3: #a855f7;
+  --gold: #fbbf24;
+  --green: #10b981;
+  --red: #ef4444;
+  --text: #e2e8f0;
+  --muted: #64748b;
+  --dim: #334155;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Sans SC', sans-serif;
+  font-weight: 300;
+  line-height: 1.7;
+  overflow-x: hidden;
+}
+
+/* ─── NOISE OVERLAY ─── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── GRID LINES ─── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── LAYOUT ─── */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── HEADER ─── */
+header {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6rem 0 4rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.header-glow {
+  position: absolute;
+  top: 20%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 400px;
+  background: radial-gradient(ellipse, rgba(0,229,255,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.paper-tag {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  border: 1px solid rgba(0,229,255,0.3);
+  padding: 0.3rem 0.8rem;
+  margin-bottom: 2rem;
+  animation: fadeUp 0.6s ease both;
+}
+
+h1 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  font-size: clamp(3.5rem, 8vw, 7rem);
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+  animation: fadeUp 0.7s 0.1s ease both;
+}
+
+h1 .highlight {
+  color: var(--accent);
+  display: block;
+}
+
+.subtitle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 1.5rem;
+  max-width: 500px;
+  animation: fadeUp 0.7s 0.2s ease both;
+}
+
+.paper-ref {
+  margin-top: 1rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--dim);
+  animation: fadeUp 0.7s 0.3s ease both;
+}
+
+.scroll-hint {
+  margin-top: 4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--dim);
+  animation: fadeUp 0.7s 0.5s ease both;
+}
+
+.scroll-line {
+  width: 40px;
+  height: 1px;
+  background: var(--dim);
+  animation: expand 2s 1s ease infinite;
+}
+
+/* ─── SECTION ─── */
+section {
+  padding: 6rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.section-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+}
+
+h2 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: clamp(1.8rem, 4vw, 2.8rem);
+  line-height: 1.1;
+  margin-bottom: 1rem;
+}
+
+.section-desc {
+  color: var(--muted);
+  max-width: 600px;
+  margin-bottom: 3rem;
+  font-size: 0.95rem;
+}
+
+/* ─── STEP CARDS ─── */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 2rem;
+  position: relative;
+  opacity: 0;
+  transform: translateX(-20px);
+  transition: all 0.5s ease;
+}
+
+.step.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.step:hover {
+  border-color: rgba(0,229,255,0.2);
+}
+
+.step-num {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+}
+
+.step h3 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.step p {
+  font-size: 0.9rem;
+  color: #94a3b8;
+  margin-bottom: 1rem;
+}
+
+/* ─── TOKEN VISUALIZATION ─── */
+.token-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+
+.token {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 3px;
+  border: 1px solid;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.token.generated {
+  background: rgba(16,185,129,0.08);
+  border-color: rgba(16,185,129,0.4);
+  color: var(--green);
+}
+
+.token.pending {
+  background: rgba(100,116,139,0.08);
+  border-color: var(--dim);
+  color: var(--muted);
+}
+
+.token.mask {
+  background: rgba(168,85,247,0.08);
+  border-color: rgba(168,85,247,0.3);
+  color: var(--accent3);
+  letter-spacing: 0.1em;
+}
+
+.token.draft {
+  background: rgba(251,191,36,0.08);
+  border-color: rgba(251,191,36,0.3);
+  color: var(--gold);
+}
+
+.token.accepted {
+  background: rgba(16,185,129,0.1);
+  border-color: rgba(16,185,129,0.5);
+  color: var(--green);
+}
+
+.token.rejected {
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(239,68,68,0.3);
+  color: var(--red);
+  text-decoration: line-through;
+}
+
+.token.current {
+  background: rgba(0,229,255,0.1);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 12px rgba(0,229,255,0.2);
+}
+
+.arrow {
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+/* ─── MODEL BOXES ─── */
+.model-flow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+
+.model-box {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  padding: 0.5rem 1rem;
+  border-radius: 2px;
+  border: 1px solid;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.model-box.small {
+  border-color: rgba(251,191,36,0.4);
+  background: rgba(251,191,36,0.05);
+  color: var(--gold);
+}
+
+.model-box.large {
+  border-color: rgba(0,229,255,0.4);
+  background: rgba(0,229,255,0.05);
+  color: var(--accent);
+}
+
+.model-box.diffusion {
+  border-color: rgba(168,85,247,0.4);
+  background: rgba(168,85,247,0.05);
+  color: var(--accent3);
+}
+
+.flow-arrow {
+  color: var(--dim);
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+/* ─── AUTOREGRESSIVE ANIMATION ─── */
+.ar-demo {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  margin: 1rem 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.ar-demo-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  color: var(--muted);
+  letter-spacing: 0.15em;
+  margin-bottom: 1rem;
+}
+
+.ar-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.ar-step {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  opacity: 0.3;
+  transition: opacity 0.3s ease;
+}
+
+.ar-step.active { opacity: 1; }
+
+.ar-step-idx {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  color: var(--muted);
+  width: 2.5rem;
+  flex-shrink: 0;
+}
+
+.cost-indicator {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--red);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ─── DIFFUSION STEPS ─── */
+.diffusion-steps {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 1rem 0;
+}
+
+.diffusion-step-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.diffusion-step-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.55rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.diffusion-token-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* ─── COMPARISON TABLE ─── */
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+.compare-cell {
+  background: var(--surface);
+  padding: 1.25rem;
+}
+
+.compare-cell.header {
+  background: var(--bg3);
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.compare-cell.method-1 { --accent-col: #94a3b8; }
+.compare-cell.method-2 { --accent-col: var(--gold); }
+.compare-cell.method-3 { --accent-col: var(--accent); }
+
+.compare-cell.header.method-1 { color: #94a3b8; }
+.compare-cell.header.method-2 { color: var(--gold); }
+.compare-cell.header.method-3 { color: var(--accent); }
+
+.compare-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.compare-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.good { color: var(--green); }
+.bad { color: var(--red); }
+.mid { color: var(--gold); }
+
+/* ─── SPEED BAR CHART ─── */
+.speed-chart {
+  margin: 2rem 0;
+}
+
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.speed-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  width: 140px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.speed-bar-wrap {
+  flex: 1;
+  background: var(--bg3);
+  height: 32px;
+  position: relative;
+  overflow: hidden;
+}
+
+.speed-bar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  transition: width 1.5s cubic-bezier(0.16, 1, 0.3, 1);
+  width: 0;
+}
+
+.speed-bar.ar {
+  background: rgba(100,116,139,0.2);
+  border-right: 2px solid #64748b;
+  color: #94a3b8;
+}
+
+.speed-bar.spec {
+  background: rgba(251,191,36,0.1);
+  border-right: 2px solid var(--gold);
+  color: var(--gold);
+}
+
+.speed-bar.dflash {
+  background: rgba(0,229,255,0.1);
+  border-right: 2px solid var(--accent);
+  color: var(--accent);
+}
+
+/* ─── ACCEPTANCE RATE ─── */
+.acceptance-demo {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.acceptance-row {
+  margin-bottom: 1.5rem;
+}
+
+.acceptance-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.acceptance-tokens {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.acceptance-bar-wrap {
+  background: var(--bg3);
+  height: 4px;
+  margin-top: 0.75rem;
+}
+
+.acceptance-bar {
+  height: 100%;
+  transition: width 1.2s ease;
+  width: 0;
+}
+
+.acceptance-rate-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  margin-top: 0.3rem;
+}
+
+/* ─── FORMULA BOX ─── */
+.formula {
+  background: var(--bg3);
+  border-left: 2px solid var(--accent);
+  padding: 1rem 1.5rem;
+  margin: 1.5rem 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.formula .comment {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* ─── HIGHLIGHT BOX ─── */
+.insight {
+  background: rgba(0,229,255,0.04);
+  border: 1px solid rgba(0,229,255,0.15);
+  padding: 1.25rem 1.5rem;
+  margin: 1.5rem 0;
+  font-size: 0.875rem;
+}
+
+.insight strong {
+  color: var(--accent);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+/* ─── DIFFUSION ANIMATION ─── */
+@keyframes denoise {
+  0% { opacity: 0.3; filter: blur(2px); }
+  100% { opacity: 1; filter: blur(0); }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes expand {
+  0%, 100% { width: 40px; opacity: 0.3; }
+  50% { width: 80px; opacity: 1; }
+}
+
+@keyframes pulse-accent {
+  0%, 100% { box-shadow: 0 0 8px rgba(0,229,255,0.2); }
+  50% { box-shadow: 0 0 20px rgba(0,229,255,0.5); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  animation: blink 1s infinite;
+  vertical-align: middle;
+}
+
+/* ─── INTERACTIVE DEMO ─── */
+.demo-container {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 2rem;
+  margin: 2rem 0;
+}
+
+.demo-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  color: var(--accent);
+  margin-bottom: 1.5rem;
+}
+
+.demo-controls {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.05em;
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-primary:hover {
+  background: rgba(0,229,255,0.1);
+}
+
+.btn-secondary {
+  border-color: var(--dim);
+  color: var(--muted);
+}
+
+.btn-secondary:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.demo-output {
+  min-height: 120px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.demo-status {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-top: 0.75rem;
+}
+
+/* ─── TIMELINE ─── */
+.timeline {
+  position: relative;
+  padding-left: 2rem;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.timeline-item {
+  position: relative;
+  margin-bottom: 2.5rem;
+}
+
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: -2.35rem;
+  top: 0.35rem;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.timeline-item h4 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.timeline-item p {
+  font-size: 0.875rem;
+  color: #94a3b8;
+}
+
+/* ─── FOOTER ─── */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 3rem 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* ─── UTILS ─── */
+.mono { font-family: 'IBM Plex Mono', monospace; }
+.dim { color: var(--muted); }
+.mt1 { margin-top: 0.5rem; }
+.mt2 { margin-top: 1rem; }
+.mt3 { margin-top: 1.5rem; }
+.tag {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid;
+  margin: 0.2rem;
+}
+.tag-blue { border-color: rgba(0,229,255,0.4); color: var(--accent); }
+.tag-purple { border-color: rgba(168,85,247,0.4); color: var(--accent3); }
+.tag-gold { border-color: rgba(251,191,36,0.4); color: var(--gold); }
+.tag-green { border-color: rgba(16,185,129,0.4); color: var(--green); }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="header-glow"></div>
+  <div class="container">
+    <div class="paper-tag">LLM INFERENCE</div>
+    <h1>D<span class="highlight">Flash</span></h1>
+    <p class="subtitle">Block Diffusion for Flash Speculative Decoding<br>推理加速原理·逐步拆解</p>
+    <div class="scroll-hint">
+      <div class="scroll-line"></div>
+      向下滚动开始阅读
+    </div>
+  </div>
+</header>
+
+<!-- SECTION 0: PROBLEM -->
+<section id="problem">
+  <div class="container">
+    <div class="section-label">00 — 问题背景</div>
+    <h2>LLM 推理为什么慢？</h2>
+    <p class="section-desc">大语言模型的推理速度受到自回归解码方式的根本性限制。</p>
+
+    <div class="insight">
+      <strong>核心瓶颈</strong>
+      现代 LLM（如 Llama、Qwen）采用 Transformer 架构，每次前向传播只生成 <span style="color:var(--accent)">1 个 token</span>。生成 N 个 token 需要 N 次完整的大模型前向传播。GPU 算力无法被充分利用——因为每一步都依赖上一步的输出。
+    </div>
+
+    <div class="steps">
+      <div class="step visible">
+        <div class="step-num">瓶颈 · 01</div>
+        <h3>串行依赖</h3>
+        <p>Token t 的生成依赖 token t-1，无法并行化生成多个 token。</p>
+        <div class="token-row">
+          <span class="token generated">The</span>
+          <span class="arrow">→</span>
+          <span class="token generated">quick</span>
+          <span class="arrow">→</span>
+          <span class="token generated">brown</span>
+          <span class="arrow">→</span>
+          <span class="token current">fox<span class="cursor"></span></span>
+          <span class="arrow">→</span>
+          <span class="token pending">???</span>
+          <span class="arrow">→</span>
+          <span class="token pending">???</span>
+        </div>
+      </div>
+      <div class="step visible">
+        <div class="step-num">瓶颈 · 02</div>
+        <h3>Memory Wall（内存墙）</h3>
+        <p>每次前向传播需从 HBM（GPU 显存）读取全部模型权重，带宽成为瓶颈而非算力。</p>
+        <div class="formula">
+          读取延迟 ∝ 模型参数量 × 精度字节数 / HBM 带宽
+          <div class="comment mt1"># 70B 模型 @ BF16 ≈ 140GB，每步需完整读取</div>
+        </div>
+      </div>
+      <div class="step visible">
+        <div class="step-num">瓶颈 · 03</div>
+        <h3>KV Cache 增长</h3>
+        <p>随着序列变长，KV Cache 持续增大，每步注意力计算量线性增加。</p>
+        <div class="formula">
+          KV Cache 大小 = 2 × L × H × d × seq_len × 精度
+          <div class="comment mt1"># L=层数, H=头数, d=head_dim；长文本推理成本极高</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 1: AUTOREGRESSIVE -->
+<section id="autoregressive">
+  <div class="container">
+    <div class="section-label">01 — 经典方法</div>
+    <h2>自回归解码<br><span style="color:var(--muted);font-size:0.6em;font-weight:400">Autoregressive Decoding</span></h2>
+    <p class="section-desc">最基础的 LLM 推理方式：每步生成一个 token，每步调用一次完整的大模型。</p>
+
+    <div class="steps" id="ar-steps">
+      <div class="step">
+        <div class="step-num">步骤 · 01</div>
+        <h3>输入 Prompt，计算初始 KV Cache</h3>
+        <p>将输入序列一次性通过大模型（Prefill 阶段），得到所有输入 token 的 KV Cache，并生成第一个输出 token。</p>
+        <div class="model-flow">
+          <div class="token-row">
+            <span class="token generated">Tell</span>
+            <span class="token generated">me</span>
+            <span class="token generated">a</span>
+            <span class="token generated">story</span>
+          </div>
+          <span class="flow-arrow">→</span>
+          <div class="model-box large">Large LLM<br><span style="font-size:0.6rem;opacity:0.6">70B params</span></div>
+          <span class="flow-arrow">→</span>
+          <span class="token current">Once</span>
+        </div>
+        <div class="tag tag-blue">并行处理 prompt</div>
+        <div class="tag tag-green">生成 token #1</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 02</div>
+        <h3>Decode 阶段：循环逐个生成</h3>
+        <p>每轮将上一步生成的 token 作为新输入，模型只处理这一个 token（利用 KV Cache 避免重复计算），输出下一个 token。</p>
+        <div class="ar-demo">
+          <div class="ar-demo-label">DECODE 循环 — 每行 = 一次大模型前向传播</div>
+          <div class="ar-timeline">
+            <div class="ar-step active">
+              <span class="ar-step-idx">Step 1</span>
+              <div class="token-row">
+                <span class="token generated">Once</span>
+                <span class="arrow">→</span>
+                <span class="model-box large" style="font-size:0.6rem;padding:0.3rem 0.6rem">LLM</span>
+                <span class="arrow">→</span>
+                <span class="token current">upon</span>
+              </div>
+              <span class="cost-indicator">1× forward</span>
+            </div>
+            <div class="ar-step active">
+              <span class="ar-step-idx">Step 2</span>
+              <div class="token-row">
+                <span class="token generated">upon</span>
+                <span class="arrow">→</span>
+                <span class="model-box large" style="font-size:0.6rem;padding:0.3rem 0.6rem">LLM</span>
+                <span class="arrow">→</span>
+                <span class="token current">a</span>
+              </div>
+              <span class="cost-indicator">1× forward</span>
+            </div>
+            <div class="ar-step active">
+              <span class="ar-step-idx">Step 3</span>
+              <div class="token-row">
+                <span class="token generated">a</span>
+                <span class="arrow">→</span>
+                <span class="model-box large" style="font-size:0.6rem;padding:0.3rem 0.6rem">LLM</span>
+                <span class="arrow">→</span>
+                <span class="token current">time</span>
+              </div>
+              <span class="cost-indicator">1× forward</span>
+            </div>
+            <div class="ar-step active">
+              <span class="ar-step-idx">Step N</span>
+              <div class="token-row">
+                <span class="token generated">time</span>
+                <span class="arrow">→</span>
+                <span class="model-box large" style="font-size:0.6rem;padding:0.3rem 0.6rem">LLM</span>
+                <span class="arrow">→</span>
+                <span class="token current">...</span>
+              </div>
+              <span class="cost-indicator">1× forward</span>
+            </div>
+          </div>
+        </div>
+        <div class="insight">
+          <strong>关键代价</strong>
+          生成 N 个 token → 调用大模型 N 次 decode forward。GPU 大量时间浪费在等待 HBM 读写，而非真正计算。
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 03</div>
+        <h3>复杂度分析</h3>
+        <p>自回归解码的时间复杂度与输出序列长度成正比，无法利用 GPU 的大规模并行能力。</p>
+        <div class="formula">
+          总时延 T_ar = N × T_forward(1 token)
+          <div class="comment mt1"># N = 目标输出长度</div>
+          <div class="comment"># T_forward(1) ≈ 模型大小决定的常数，通常数十毫秒</div>
+        </div>
+        <div style="margin-top:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <span class="tag tag-blue">输出 100 tokens → 100 次大模型调用</span>
+          <span class="tag" style="border-color:rgba(239,68,68,0.4);color:var(--red)">GPU 利用率极低</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 2: SPECULATIVE DECODING -->
+<section id="speculative">
+  <div class="container">
+    <div class="section-label">02 — 传统改进</div>
+    <h2>投机解码<br><span style="color:var(--muted);font-size:0.6em;font-weight:400">Speculative Decoding</span></h2>
+    <p class="section-desc">用小草稿模型快速生成候选序列，用大目标模型一次性并行验证，"以投机换速度"。</p>
+
+    <div class="insight">
+      <strong>核心洞察</strong>
+      大模型验证多个 token 并不比验证 1 个 token 慢多少（KV Cache 可并行处理）。如果能提前猜对未来 k 个 token，就能以 1 次大模型 forward 的代价获得 k 个 token。
+    </div>
+
+    <div class="steps" id="spec-steps">
+      <div class="step">
+        <div class="step-num">步骤 · 01</div>
+        <h3>草稿阶段：小模型快速生成候选序列</h3>
+        <p>用参数量小得多的草稿模型（Draft Model），自回归生成接下来 k 个候选 token。草稿模型很快，但质量低于大模型。</p>
+        <div class="model-flow">
+          <span style="font-size:0.8rem;color:var(--muted)">上下文</span>
+          <span class="flow-arrow">→</span>
+          <div class="model-box small">Draft Model<br><span style="font-size:0.6rem;opacity:0.6">7B params</span></div>
+          <span class="flow-arrow">→</span>
+          <div class="token-row">
+            <span class="token draft">upon</span>
+            <span class="token draft">a</span>
+            <span class="token draft">time</span>
+            <span class="token draft">there</span>
+          </div>
+        </div>
+        <div class="tag tag-gold">快速生成 k=4 个草稿 token</div>
+        <div class="tag tag-gold">草稿模型 ~10× 更小</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 02</div>
+        <h3>验证阶段：大模型并行验证所有草稿</h3>
+        <p>将上下文 + 全部 k 个草稿 token 一起送入大模型，进行一次 forward。大模型并行输出每个位置的概率分布。</p>
+        <div class="model-flow">
+          <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:center">
+            <div style="font-size:0.65rem;color:var(--muted);font-family:'IBM Plex Mono',monospace">上下文 + 草稿</div>
+            <div class="token-row">
+              <span class="token generated">Once</span>
+              <span class="token draft">upon</span>
+              <span class="token draft">a</span>
+              <span class="token draft">time</span>
+              <span class="token draft">there</span>
+            </div>
+          </div>
+          <span class="flow-arrow">→</span>
+          <div class="model-box large">Large LLM<br><span style="font-size:0.6rem;opacity:0.6">1× forward only</span></div>
+          <span class="flow-arrow">→</span>
+          <div style="font-size:0.65rem;color:var(--muted);font-family:'IBM Plex Mono',monospace">每位置概率分布 P</div>
+        </div>
+        <div class="tag tag-blue">仅 1 次大模型 forward</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 03</div>
+        <h3>接受/拒绝：逐 token 对比概率</h3>
+        <p>对比草稿模型与大模型在每个位置的概率分布，使用接受-拒绝采样决定是否接受每个草稿 token。第一个被拒绝的 token 之后的所有 token 一并丢弃。</p>
+
+        <div class="acceptance-demo">
+          <div class="acceptance-row">
+            <div class="acceptance-title">SCENARIO A — 高接受率（草稿质量好）</div>
+            <div class="acceptance-tokens">
+              <span class="token accepted">upon ✓</span>
+              <span class="token accepted">a ✓</span>
+              <span class="token accepted">time ✓</span>
+              <span class="token rejected">there ✗</span>
+            </div>
+            <div style="font-size:0.75rem;color:#94a3b8;font-family:'IBM Plex Mono',monospace">
+              → 获得 3 个 token，第 4 个被拒绝后由大模型重采样补充 1 个
+            </div>
+            <div class="acceptance-bar-wrap mt1">
+              <div class="acceptance-bar" style="width:75%;background:rgba(16,185,129,0.3);border-right:2px solid var(--green)"></div>
+            </div>
+            <div class="acceptance-rate-label good">接受率 75% → 有效加速 ~3×</div>
+          </div>
+          <div class="acceptance-row">
+            <div class="acceptance-title">SCENARIO B — 低接受率（草稿质量差）</div>
+            <div class="acceptance-tokens">
+              <span class="token rejected">upon ✗</span>
+              <span class="token pending" style="opacity:0.3">a</span>
+              <span class="token pending" style="opacity:0.3">time</span>
+              <span class="token pending" style="opacity:0.3">there</span>
+            </div>
+            <div style="font-size:0.75rem;color:#94a3b8;font-family:'IBM Plex Mono',monospace">
+              → 仅第 1 个就被拒绝，1 次大模型 forward 只产出 1 个 token，相当于退化为自回归
+            </div>
+            <div class="acceptance-bar-wrap mt1">
+              <div class="acceptance-bar" style="width:20%;background:rgba(239,68,68,0.3);border-right:2px solid var(--red)"></div>
+            </div>
+            <div class="acceptance-rate-label bad">接受率 20% → 几乎无加速</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 04</div>
+        <h3>传统投机解码的瓶颈</h3>
+        <p>草稿模型本身也是自回归的，生成 k 个草稿 token 仍需 k 步串行推理，这部分延迟不可忽视。</p>
+        <div class="formula">
+          总时延 T_spec = n/α × T_LLM + n/α × k × T_draft
+          <div class="comment mt1"># α = 平均每次 forward 被接受的 token 数</div>
+          <div class="comment"># k × T_draft = 草稿生成开销（串行！）</div>
+          <div class="comment"># 当 k 大时草稿开销不可忽略</div>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
+          <span class="tag tag-gold">草稿生成仍是串行瓶颈</span>
+          <span class="tag" style="border-color:rgba(239,68,68,0.3);color:var(--red)">k 较大时草稿延迟显著</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 3: DFLASH -->
+<section id="dflash">
+  <div class="container">
+    <div class="section-label">03 — DFlash</div>
+    <h2>Block Diffusion<br><span style="color:var(--accent);font-size:0.6em;font-weight:400">扩散模型并行草稿生成</span></h2>
+    <p class="section-desc">DFlash 的核心创新：用扩散模型替代自回归草稿模型，实现草稿 token 块内并行生成，彻底消除草稿阶段的串行瓶颈。</p>
+
+    <div class="insight">
+      <strong>关键区别</strong>
+      传统投机解码的草稿模型是自回归的（串行生成 k 步）。DFlash 使用 Block Diffusion 模型，整个 k-token 块通过多步去噪<strong style="color:var(--accent)">并行</strong>生成——无串行依赖。
+    </div>
+
+    <div class="steps" id="dflash-steps">
+      <div class="step">
+        <div class="step-num">步骤 · 01</div>
+        <h3>初始化：全块 MASK</h3>
+        <p>将待生成的 k 个位置全部初始化为 [MASK] token（噪声状态），准备开始去噪过程。</p>
+        <div class="model-flow">
+          <div class="token-row">
+            <span class="token generated">Once</span>
+          </div>
+          <span class="flow-arrow">+</span>
+          <div class="token-row">
+            <span class="token mask">[M]</span>
+            <span class="token mask">[M]</span>
+            <span class="token mask">[M]</span>
+            <span class="token mask">[M]</span>
+          </div>
+        </div>
+        <div class="tag tag-purple">k=4 个位置全部 MASK</div>
+        <div class="tag tag-purple">整块同时初始化</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 02</div>
+        <h3>去噪迭代：多步并行精化</h3>
+        <p>扩散模型对整个 token 块进行 T 步去噪迭代。每步中，模型同时预测所有 k 个位置的 token，逐步将 MASK 替换为具体 token。注意：每步内所有位置<strong style="color:var(--accent)">并行处理</strong>。</p>
+
+        <div style="background:var(--bg2);border:1px solid var(--border);padding:1.5rem;margin:1rem 0;overflow-x:auto;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--muted);margin-bottom:1rem;letter-spacing:0.1em">去噪过程（T步）— 每步所有位置同时更新</div>
+          <div class="diffusion-steps">
+            <div class="diffusion-step-col">
+              <div class="diffusion-step-label">t=T<br>噪声</div>
+              <div class="diffusion-token-group">
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;color:var(--dim);font-size:1.2rem;flex-shrink:0">→</div>
+            <div class="diffusion-step-col">
+              <div class="diffusion-step-label">t=T/2<br>半去噪</div>
+              <div class="diffusion-token-group">
+                <span class="token mask" style="font-size:0.65rem;opacity:0.7">upon</span>
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+                <span class="token mask" style="font-size:0.65rem;opacity:0.5">time</span>
+                <span class="token mask" style="font-size:0.65rem">[M]</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;color:var(--dim);font-size:1.2rem;flex-shrink:0">→</div>
+            <div class="diffusion-step-col">
+              <div class="diffusion-step-label">t=1<br>接近清晰</div>
+              <div class="diffusion-token-group">
+                <span class="token draft" style="font-size:0.65rem">upon</span>
+                <span class="token draft" style="font-size:0.65rem">a</span>
+                <span class="token draft" style="font-size:0.65rem">time</span>
+                <span class="token mask" style="font-size:0.65rem;opacity:0.8">[M]</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;color:var(--dim);font-size:1.2rem;flex-shrink:0">→</div>
+            <div class="diffusion-step-col">
+              <div class="diffusion-step-label">t=0<br>最终草稿</div>
+              <div class="diffusion-token-group">
+                <span class="token draft" style="font-size:0.65rem">upon</span>
+                <span class="token draft" style="font-size:0.65rem">a</span>
+                <span class="token draft" style="font-size:0.65rem">time</span>
+                <span class="token draft" style="font-size:0.65rem">there</span>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:1rem;font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--muted)">
+            每步调用 1 次小扩散模型 → T 步共调用 T 次，但 T &lt;&lt; k（通常 T=10，k=16-32）
+          </div>
+        </div>
+
+        <div class="tag tag-purple">每步内 k 个位置并行</div>
+        <div class="tag tag-purple">T 步去噪 ≈ 10-20 步</div>
+        <div class="tag tag-green">总草稿生成步数 T &lt;&lt; k</div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 03</div>
+        <h3>与传统投机解码相同：大模型并行验证</h3>
+        <p>将扩散模型生成的 k 个草稿 token 送入大目标模型，进行一次 forward 并行验证，流程与传统投机解码相同。</p>
+        <div class="model-flow">
+          <div class="token-row">
+            <span class="token generated">Once</span>
+            <span class="token draft">upon</span>
+            <span class="token draft">a</span>
+            <span class="token draft">time</span>
+            <span class="token draft">there</span>
+          </div>
+          <span class="flow-arrow">→</span>
+          <div class="model-box large">Large LLM<br><span style="font-size:0.6rem;opacity:0.6">1× forward</span></div>
+          <span class="flow-arrow">→</span>
+          <div class="token-row">
+            <span class="token accepted">upon ✓</span>
+            <span class="token accepted">a ✓</span>
+            <span class="token accepted">time ✓</span>
+            <span class="token accepted">there ✓</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 04</div>
+        <h3>为什么扩散草稿更快？</h3>
+        <p>关键对比：传统草稿模型生成 k 个 token 需要 k 步串行；DFlash 扩散模型生成 k 个 token 只需 T 步（T 约为 10-20，与 k 无关）。</p>
+        <div class="compare-grid">
+          <div class="compare-cell header method-1">传统自回归草稿</div>
+          <div class="compare-cell header method-3">DFlash 扩散草稿</div>
+          <div class="compare-cell" style="grid-column:span 2;background:var(--bg3)"></div>
+
+          <div class="compare-cell method-1">
+            <div class="compare-label">草稿生成步数（生成 k tokens）</div>
+            <div class="compare-value bad">k 步（串行）</div>
+          </div>
+          <div class="compare-cell method-3">
+            <div class="compare-label">草稿生成步数（生成 k tokens）</div>
+            <div class="compare-value good">T 步（并行，T &lt;&lt; k）</div>
+          </div>
+
+          <div class="compare-cell method-1">
+            <div class="compare-label">块大小 k 增大时</div>
+            <div class="compare-value bad">草稿延迟线性增加</div>
+          </div>
+          <div class="compare-cell method-3">
+            <div class="compare-label">块大小 k 增大时</div>
+            <div class="compare-value good">草稿延迟几乎不变</div>
+          </div>
+
+          <div class="compare-cell method-1">
+            <div class="compare-label">计算模式</div>
+            <div class="compare-value mid">自回归串行</div>
+          </div>
+          <div class="compare-cell method-3">
+            <div class="compare-label">计算模式</div>
+            <div class="compare-value good">扩散并行</div>
+          </div>
+        </div>
+        <div class="formula">
+          T_draft_ar  = k × T_small_model      <span style="color:var(--muted)">// 串行 k 步</span>
+          T_draft_dflash = T × T_small_model   <span style="color:var(--muted)">// 并行 T 步，T ≈ 10</span>
+          <div class="comment mt1"># 当 k=32, T=10 → DFlash 草稿快 ~3× 以上</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">步骤 · 05</div>
+        <h3>完整复杂度对比</h3>
+        <p>综合草稿生成与大模型验证两个阶段的总延迟。</p>
+        <div class="formula">
+          <span style="color:#94a3b8">// 自回归</span>
+          T_ar = N × T_LLM
+
+          <span style="color:var(--gold)">// 传统投机解码</span>
+          T_spec = (N/α) × (T_LLM + k × T_draft)
+
+          <span style="color:var(--accent)">// DFlash</span>
+          T_dflash = (N/α) × (T_LLM + T × T_draft)
+          <div class="comment mt1"># α = 接受率, k = 块大小, T = 扩散步数（T &lt;&lt; k）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 4: COMPARISON -->
+<section id="comparison">
+  <div class="container">
+    <div class="section-label">04 — 横向对比</div>
+    <h2>三种方法全面比较</h2>
+    <p class="section-desc">从生成质量、速度、适用场景多维度对比三种解码策略。</p>
+
+    <div class="compare-grid">
+      <div class="compare-cell" style="background:var(--bg3)"></div>
+      <div class="compare-cell header method-1">自回归解码</div>
+      <div class="compare-cell header method-2">传统投机解码</div>
+      <div class="compare-cell header method-3">DFlash</div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">草稿生成方式</div>
+      <div class="compare-cell method-1"><div class="compare-value mid">无（直接生成）</div></div>
+      <div class="compare-cell method-2"><div class="compare-value mid">自回归小模型（串行）</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">扩散模型（并行块）</div></div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">大模型调用次数</div>
+      <div class="compare-cell method-1"><div class="compare-value bad">N 次</div></div>
+      <div class="compare-cell method-2"><div class="compare-value good">N/α 次</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">N/α 次</div></div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">草稿生成开销</div>
+      <div class="compare-cell method-1"><div class="compare-value mid">无</div></div>
+      <div class="compare-cell method-2"><div class="compare-value bad">k × T_small（随k增大）</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">T × T_small（与k无关）</div></div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">输出等价性</div>
+      <div class="compare-cell method-1"><div class="compare-value good">完全等价</div></div>
+      <div class="compare-cell method-2"><div class="compare-value good">理论等价</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">理论等价</div></div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">大块大小 k 时表现</div>
+      <div class="compare-cell method-1"><div class="compare-value mid">不变</div></div>
+      <div class="compare-cell method-2"><div class="compare-value bad">草稿开销增大</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">草稿开销几乎不变</div></div>
+
+      <div class="compare-cell" style="background:var(--bg3);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">典型加速比</div>
+      <div class="compare-cell method-1"><div class="compare-value" style="color:#94a3b8">1× 基准</div></div>
+      <div class="compare-cell method-2"><div class="compare-value mid">1.5–2.5×</div></div>
+      <div class="compare-cell method-3"><div class="compare-value good">2–4×</div></div>
+    </div>
+
+    <!-- SPEED BAR CHART -->
+    <div style="margin-top:3rem;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--muted);letter-spacing:0.1em;margin-bottom:1.5rem">相对吞吐量（tokens/s，越长越好）</div>
+      <div class="speed-chart" id="speed-chart">
+        <div class="speed-row">
+          <div class="speed-label">自回归解码</div>
+          <div class="speed-bar-wrap">
+            <div class="speed-bar ar" style="width:25%">1× baseline</div>
+          </div>
+        </div>
+        <div class="speed-row">
+          <div class="speed-label">传统投机解码</div>
+          <div class="speed-bar-wrap">
+            <div class="speed-bar spec" style="width:55%">~2× speedup</div>
+          </div>
+        </div>
+        <div class="speed-row">
+          <div class="speed-label">DFlash</div>
+          <div class="speed-bar-wrap">
+            <div class="speed-bar dflash" style="width:85%">~3.4× speedup</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 5: INTERACTIVE DEMO -->
+<section id="demo">
+  <div class="container">
+    <div class="section-label">05 — 交互演示</div>
+    <h2>模拟解码过程</h2>
+    <p class="section-desc">可视化三种解码策略的 token 生成时序，理解时延差异。</p>
+
+    <div class="demo-container">
+      <div class="demo-title">DECODE SIMULATOR — 选择方法后点击 RUN</div>
+      <div class="demo-controls">
+        <button class="btn btn-secondary" id="btn-ar" onclick="runDemo('ar')">自回归解码</button>
+        <button class="btn btn-secondary" id="btn-spec" onclick="runDemo('spec')">传统投机解码</button>
+        <button class="btn btn-primary" id="btn-dflash" onclick="runDemo('dflash')">DFlash</button>
+        <button class="btn btn-secondary" onclick="resetDemo()">重置</button>
+      </div>
+      <div class="demo-output" id="demo-output">
+        <span style="color:var(--muted)">// 选择一种解码方式开始模拟</span>
+      </div>
+      <div class="demo-status" id="demo-status"></div>
+    </div>
+  </div>
+</section>
+
+<!-- SECTION 6: SUMMARY TIMELINE -->
+<section id="summary">
+  <div class="container">
+    <div class="section-label">06 — 发展脉络</div>
+    <h2>推理加速技术演进</h2>
+    <p class="section-desc">从朴素自回归到 DFlash 的技术发展路径。</p>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <h4>自回归解码 <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">(Transformer 基线)</span></h4>
+        <p>每次 forward 生成 1 个 token，简单可靠，但无法并行化输出序列生成，GPU 算力严重浪费。</p>
+      </div>
+      <div class="timeline-item">
+        <h4>KV Cache 优化 <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">(2022)</span></h4>
+        <p>缓存历史 Key/Value，避免重复计算。Decode 阶段只需处理新增 token，大幅降低每步计算量，但未解决串行问题。</p>
+      </div>
+      <div class="timeline-item">
+        <h4>FlashAttention <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">(Tri Dao, 2022)</span></h4>
+        <p>IO感知的 Attention 实现，通过 Tiling 减少 HBM 读写，大幅提升硬件利用率。这是访存优化，不改变解码逻辑。</p>
+      </div>
+      <div class="timeline-item">
+        <h4>投机解码 <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">(Leviathan et al., 2023)</span></h4>
+        <p>引入草稿模型，将单次大模型 forward 的产出从 1 token 提升到 k tokens，理论上可达 k× 加速。受限于草稿质量和草稿生成串行开销。</p>
+      </div>
+      <div class="timeline-item">
+        <h4>DFlash <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted)">(2026)</span></h4>
+        <p>将扩散模型引入草稿生成阶段，实现 token 块内并行去噪。草稿生成开销与块大小 k 解耦，可使用更大的 k 值获得更高加速比，同时保持输出分布与原始大模型等价。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem">
+      <div>
+        DFlash — Block Diffusion for Flash Speculative Decoding
+      </div>
+      <div style="text-align:right;color:var(--dim)">
+        可视化说明文档<br>
+        内容基于论文摘要及公开资料
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ─── INTERSECTION OBSERVER FOR STEPS ───
+const steps = document.querySelectorAll('.step');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry, i) => {
+    if (entry.isIntersecting) {
+      setTimeout(() => {
+        entry.target.classList.add('visible');
+      }, 80);
+    }
+  });
+}, { threshold: 0.15 });
+
+steps.forEach(step => observer.observe(step));
+
+// ─── SPEED BARS ANIMATION ───
+const speedBars = document.querySelectorAll('.speed-bar');
+const speedObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      // bars already have correct width via inline style
+    }
+  });
+}, { threshold: 0.3 });
+
+const speedChart = document.getElementById('speed-chart');
+if (speedChart) speedObserver.observe(speedChart);
+
+// ─── DEMO SIMULATION ───
+const targetSentence = [
+  'Once', 'upon', 'a', 'time', 'there', 'was', 'a', 'small',
+  'village', 'hidden', 'deep', 'in', 'the', 'forest', '.', 'The'
+];
+
+let demoRunning = false;
+let demoTimeout = null;
+
+function resetDemo() {
+  demoRunning = false;
+  if (demoTimeout) clearTimeout(demoTimeout);
+  document.getElementById('demo-output').innerHTML = '<span style="color:var(--muted)">// 选择一种解码方式开始模拟</span>';
+  document.getElementById('demo-status').textContent = '';
+  ['btn-ar','btn-spec','btn-dflash'].forEach(id => {
+    document.getElementById(id).classList.remove('btn-primary');
+    document.getElementById(id).classList.add('btn-secondary');
+  });
+}
+
+function delay(ms) {
+  return new Promise(resolve => { demoTimeout = setTimeout(resolve, ms); });
+}
+
+async function runDemo(mode) {
+  if (demoRunning) return;
+  demoRunning = true;
+  resetDemo();
+  demoRunning = true;
+
+  const btn = document.getElementById('btn-' + mode);
+  btn.classList.remove('btn-secondary');
+  btn.classList.add('btn-primary');
+
+  const output = document.getElementById('demo-output');
+  const status = document.getElementById('demo-status');
+  output.innerHTML = '';
+
+  const tokens = targetSentence.slice();
+  let forwardCount = 0;
+  let elapsed = 0;
+
+  if (mode === 'ar') {
+    status.textContent = '// 自回归：每个 token 需要 1 次大模型 forward';
+    for (let i = 0; i < tokens.length; i++) {
+      if (!demoRunning) return;
+      // show forward call
+      output.innerHTML += `<div style="color:var(--muted);font-size:0.65rem;margin-bottom:0.2rem">Step ${i+1}: LLM forward...</div>`;
+      await delay(350);
+      forwardCount++;
+      elapsed += 350;
+
+      const span = document.createElement('span');
+      span.className = 'token generated';
+      span.style.marginRight = '0.3rem';
+      span.style.display = 'inline-block';
+      span.style.marginBottom = '0.3rem';
+      span.textContent = tokens[i];
+      output.appendChild(span);
+      output.appendChild(document.createTextNode(' '));
+      output.scrollTop = output.scrollHeight;
+    }
+    status.textContent = `完成 | ${forwardCount} 次大模型 forward | 模拟总时延: ~${(elapsed/1000).toFixed(1)}s`;
+
+  } else if (mode === 'spec') {
+    status.textContent = '// 传统投机解码：k=4 草稿 + 大模型验证';
+    const k = 4;
+    let i = 0;
+    while (i < tokens.length && demoRunning) {
+      const draftEnd = Math.min(i + k, tokens.length);
+      const drafts = tokens.slice(i, draftEnd);
+
+      // draft generation (serial)
+      output.innerHTML += `<div style="color:var(--gold);font-size:0.65rem;margin:0.5rem 0 0.2rem">草稿模型（串行 ${drafts.length} 步）:</div>`;
+      for (let d = 0; d < drafts.length; d++) {
+        if (!demoRunning) return;
+        elapsed += 120;
+        await delay(120);
+        const span = document.createElement('span');
+        span.className = 'token draft';
+        span.style.marginRight = '0.3rem';
+        span.style.marginBottom = '0.3rem';
+        span.style.display = 'inline-block';
+        span.textContent = drafts[d];
+        output.appendChild(span);
+      }
+
+      // LLM verify
+      output.innerHTML += `<br><div style="color:var(--accent);font-size:0.65rem;margin:0.3rem 0 0.2rem">大模型验证（1次 forward）:</div>`;
+      elapsed += 400;
+      await delay(400);
+      forwardCount++;
+
+      // accept/reject simulation (random but biased toward accept)
+      let accepted = 0;
+      for (let d = 0; d < drafts.length; d++) {
+        if (!demoRunning) return;
+        const accept = Math.random() > 0.25;
+        const span = document.createElement('span');
+        span.className = accept ? 'token accepted' : 'token rejected';
+        span.style.marginRight = '0.3rem';
+        span.style.marginBottom = '0.3rem';
+        span.style.display = 'inline-block';
+        span.textContent = drafts[d] + (accept ? ' ✓' : ' ✗');
+        output.appendChild(span);
+        if (accept) { accepted++; } else { break; }
+        await delay(80);
+      }
+      output.innerHTML += '<br>';
+      i += Math.max(1, accepted);
+      output.scrollTop = output.scrollHeight;
+    }
+    status.textContent = `完成 | ${forwardCount} 次大模型 forward | 模拟总时延: ~${(elapsed/1000).toFixed(1)}s`;
+
+  } else if (mode === 'dflash') {
+    status.textContent = '// DFlash：Block Diffusion 并行草稿 + 大模型验证';
+    const k = 4;
+    const diffSteps = 3;
+    let i = 0;
+    while (i < tokens.length && demoRunning) {
+      const draftEnd = Math.min(i + k, tokens.length);
+      const drafts = tokens.slice(i, draftEnd);
+
+      // diffusion generation (parallel)
+      output.innerHTML += `<div style="color:var(--accent3);font-size:0.65rem;margin:0.5rem 0 0.2rem">扩散模型（${diffSteps} 步并行去噪 ${drafts.length} tokens）:</div>`;
+
+      for (let t = 0; t < diffSteps; t++) {
+        if (!demoRunning) return;
+        elapsed += 90;
+        await delay(90);
+        // show all k tokens being processed simultaneously
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '0.3rem';
+        row.style.marginBottom = '0.25rem';
+        row.style.alignItems = 'center';
+        const stepLabel = document.createElement('span');
+        stepLabel.style.fontFamily = "'IBM Plex Mono',monospace";
+        stepLabel.style.fontSize = '0.55rem';
+        stepLabel.style.color = 'var(--muted)';
+        stepLabel.style.width = '2.5rem';
+        stepLabel.textContent = `t=${diffSteps-t}`;
+        row.appendChild(stepLabel);
+        drafts.forEach((tok, di) => {
+          const span = document.createElement('span');
+          const revealed = di < (t / (diffSteps-1)) * drafts.length;
+          span.className = revealed ? 'token draft' : 'token mask';
+          span.style.fontSize = '0.65rem';
+          span.textContent = revealed ? tok : '[M]';
+          row.appendChild(span);
+        });
+        output.appendChild(row);
+      }
+
+      // LLM verify
+      output.innerHTML += `<div style="color:var(--accent);font-size:0.65rem;margin:0.3rem 0 0.2rem">大模型验证（1次 forward）:</div>`;
+      elapsed += 400;
+      await delay(400);
+      forwardCount++;
+
+      let accepted = 0;
+      for (let d = 0; d < drafts.length; d++) {
+        if (!demoRunning) return;
+        const accept = Math.random() > 0.2;
+        const span = document.createElement('span');
+        span.className = accept ? 'token accepted' : 'token rejected';
+        span.style.marginRight = '0.3rem';
+        span.style.marginBottom = '0.3rem';
+        span.style.display = 'inline-block';
+        span.textContent = drafts[d] + (accept ? ' ✓' : ' ✗');
+        output.appendChild(span);
+        if (accept) { accepted++; } else { break; }
+        await delay(60);
+      }
+      output.innerHTML += '<br>';
+      i += Math.max(1, accepted);
+      output.scrollTop = output.scrollHeight;
+    }
+    status.textContent = `完成 | ${forwardCount} 次大模型 forward | 模拟总时延: ~${(elapsed/1000).toFixed(1)}s`;
+  }
+
+  demoRunning = false;
+}
+</script>
+</body>
+</html>
